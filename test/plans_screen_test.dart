@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -47,6 +48,48 @@ void main() {
     expect(find.text('Desktop plan'), findsWidgets);
     expect(find.text('Nothing planned for this day'), findsOneWidget);
     expect(find.text('Add card'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('desktop itinerary date buttons scroll by mouse drag',
+      (tester) async {
+    tester.view.physicalSize = const Size(1440, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final repository = _FakePlanRepository();
+    await repository.createPlan(
+      spaceId: 'test-space',
+      title: 'Long itinerary',
+      start: CalendarDate.parse('2026-10-01'),
+      end: CalendarDate.parse('2026-10-21'),
+      notes: '',
+    );
+    await tester.pumpWidget(_harness(repository));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Long itinerary').first);
+    await tester.pumpAndSettle();
+
+    final dateList = find.byWidgetPredicate(
+      (widget) =>
+          widget is ListView && widget.scrollDirection == Axis.horizontal,
+    );
+    expect(dateList, findsOneWidget);
+    final scrollable = find.descendant(
+      of: dateList,
+      matching: find.byType(Scrollable),
+    );
+    final position = tester.state<ScrollableState>(scrollable).position;
+    expect(position.maxScrollExtent, greaterThan(0));
+
+    await tester.drag(
+      dateList,
+      const Offset(-300, 0),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pumpAndSettle();
+
+    expect(position.pixels, greaterThan(0));
     expect(tester.takeException(), isNull);
   });
 

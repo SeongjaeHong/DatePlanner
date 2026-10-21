@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -452,31 +453,42 @@ class _PlanDetailScreenState extends State<PlanDetailScreen> {
                 final selected = days.firstWhere(
                     (day) => day.id == _selectedDay!.id,
                     orElse: () => days.first);
+                final daySelectorScrollBehavior =
+                    ScrollConfiguration.of(context).copyWith(
+                  dragDevices: {
+                    ...ScrollConfiguration.of(context).dragDevices,
+                    PointerDeviceKind.mouse,
+                  },
+                );
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     if (days.length > 1) ...[
                       SizedBox(
                         height: AppTouchTarget.minimum + AppSpacing.x2,
-                        child: ListView.separated(
-                          scrollDirection: Axis.horizontal,
-                          itemCount: days.length,
-                          separatorBuilder: (_, __) =>
-                              const SizedBox(width: AppSpacing.x2),
-                          itemBuilder: (context, index) {
-                            final day = days[index];
-                            return ChoiceChip(
-                              label: Text(strings.dayLabel(
-                                  index + 1,
-                                  MaterialLocalizations.of(context)
-                                      .formatMediumDate(day.date.displayDate))),
-                              selected: selected.id == day.id,
-                              onSelected: (_) => setState(() {
-                                _selectedDay = day;
-                                _refresh++;
-                              }),
-                            );
-                          },
+                        child: ScrollConfiguration(
+                          behavior: daySelectorScrollBehavior,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: days.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(width: AppSpacing.x2),
+                            itemBuilder: (context, index) {
+                              final day = days[index];
+                              return ChoiceChip(
+                                label: Text(strings.dayLabel(
+                                    index + 1,
+                                    MaterialLocalizations.of(context)
+                                        .formatMediumDate(
+                                            day.date.displayDate))),
+                                selected: selected.id == day.id,
+                                onSelected: (_) => setState(() {
+                                  _selectedDay = day;
+                                  _refresh++;
+                                }),
+                              );
+                            },
+                          ),
                         ),
                       ),
                       const SizedBox(height: AppSpacing.x3),
