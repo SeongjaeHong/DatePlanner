@@ -1,0 +1,16 @@
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+build/
+coverage/
+lib/l10n/generated/
+.idea/
+*.iml
+.env
+.env.*
+!.env.example
+.supabase.local.json
+/supabase/project_configs.json
+/test-account*.local.json
