@@ -1,10 +1,13 @@
 import 'dart:async';
 
+import 'package:app_links/app_links.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'l10n/generated/app_localizations.dart';
+import 'auth_recovery.dart';
 import 'screens/space_invitations.dart';
 import 'screens/space_settings.dart';
 import 'screens/plans.dart';
@@ -17,15 +20,35 @@ const _supabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  final initialUri = kIsWeb ? Uri.base : await AppLinks().getInitialLink();
+  var passwordRecoveryEventDetected = false;
   if (SupabaseConnection.isConfigured) {
-    await Supabase.initialize(
-        url: _supabaseUrl, publishableKey: _supabaseAnonKey);
+    // Supabase can exchange a PKCE recovery code and emit passwordRecovery
+    // during initialize(). Listen before awaiting initialization so the event
+    // is not lost on cold-start callbacks, including older links without the
+    // auth_flow URL marker.
+    final initialization = Supabase.initialize(
+      url: _supabaseUrl,
+      publishableKey: _supabaseAnonKey,
+    );
+    passwordRecoveryEventDetected = await capturePasswordRecoveryDuringStartup(
+      initialization,
+      Supabase.instance.client.auth.onAuthStateChange.map(
+        (state) => state.event,
+      ),
+      waitForCallbackEvent:
+          initialUri != null && hasAuthCallbackCredential(initialUri),
+    );
   }
-  runApp(const DatePlannerApp());
+  final initialPasswordRecovery = passwordRecoveryEventDetected ||
+      (initialUri != null && isPasswordRecoveryCallback(initialUri));
+  runApp(DatePlannerApp(initialPasswordRecovery: initialPasswordRecovery));
 }
 
 class DatePlannerApp extends StatelessWidget {
-  const DatePlannerApp({super.key});
+  const DatePlannerApp({this.initialPasswordRecovery = false, super.key});
+
+  final bool initialPasswordRecovery;
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -40,7 +63,7 @@ class DatePlannerApp extends StatelessWidget {
           GlobalCupertinoLocalizations.delegate,
         ],
         supportedLocales: AppLocalizations.supportedLocales,
-        home: const AppGate(),
+        home: AppGate(initialPasswordRecovery: initialPasswordRecovery),
       );
 }
 
@@ -49,18 +72,175 @@ class SupabaseConnection {
       _supabaseUrl.isNotEmpty && _supabaseAnonKey.isNotEmpty;
 }
 
-class AppGate extends StatelessWidget {
-  const AppGate({super.key});
+class AppGate extends StatefulWidget {
+  const AppGate({this.initialPasswordRecovery = false, super.key});
+
+  final bool initialPasswordRecovery;
+
+  @override
+  State<AppGate> createState() => _AppGateState();
+}
+
+class _AppGateState extends State<AppGate> {
+  StreamSubscription<AuthState>? _authSubscription;
+  late bool _showPasswordRecovery = widget.initialPasswordRecovery;
+
+  @override
+  void initState() {
+    super.initState();
+    if (SupabaseConnection.isConfigured) {
+      _authSubscription =
+          Supabase.instance.client.auth.onAuthStateChange.listen((state) {
+        if (!shouldRebuildAppForAuthEvent(state.event)) return;
+        if (state.event == AuthChangeEvent.passwordRecovery) {
+          setState(() => _showPasswordRecovery = true);
+        } else if (state.event == AuthChangeEvent.signedOut) {
+          setState(() => _showPasswordRecovery = false);
+        } else if (state.event == AuthChangeEvent.signedIn) {
+          // The session is now available; rebuild from sign-in to SpaceGate.
+          setState(() {});
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     if (!SupabaseConnection.isConfigured) return const SetupRequiredScreen();
-    return StreamBuilder<AuthState>(
-      stream: Supabase.instance.client.auth.onAuthStateChange,
-      builder: (context, snapshot) =>
-          Supabase.instance.client.auth.currentSession == null
-              ? const SignInScreen()
-              : const SpaceGate(),
+    if (_showPasswordRecovery &&
+        Supabase.instance.client.auth.currentSession != null) {
+      return PasswordRecoveryScreen(
+        onCompleted: () => setState(() => _showPasswordRecovery = false),
+      );
+    }
+    return Supabase.instance.client.auth.currentSession == null
+        ? const SignInScreen()
+        : const SpaceGate();
+  }
+}
+
+class PasswordRecoveryScreen extends StatefulWidget {
+  const PasswordRecoveryScreen({this.onCompleted, super.key});
+
+  final VoidCallback? onCompleted;
+
+  @override
+  State<PasswordRecoveryScreen> createState() => _PasswordRecoveryScreenState();
+}
+
+class _PasswordRecoveryScreenState extends State<PasswordRecoveryScreen> {
+  final _password = TextEditingController();
+  final _confirmPassword = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _password.dispose();
+    _confirmPassword.dispose();
+    super.dispose();
+  }
+
+  Future<void> _savePassword() async {
+    final strings = AppLocalizations.of(context);
+    final password = _password.text;
+    if (password.length < 6) {
+      setState(() => _error = strings.passwordTooShort);
+      return;
+    }
+    if (password != _confirmPassword.text) {
+      setState(() => _error = strings.passwordsDoNotMatch);
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await Supabase.instance.client.auth
+          .updateUser(UserAttributes(password: password));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(AppLocalizations.of(context).passwordChanged),
+        ));
+        widget.onCompleted?.call();
+      }
+    } on AuthException catch (error) {
+      if (mounted) {
+        final message = error.message.toLowerCase();
+        setState(() => _error =
+            error.code == 'weak_password' || message.contains('password')
+                ? strings.weakPasswordError
+                : strings.passwordResetFailed);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _error = strings.passwordResetFailed);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
+    return Scaffold(
+      appBar: AppBar(title: Text(strings.resetPassword)),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(AppSpacing.x4),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: AppLayout.signInColumn),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.x6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(strings.chooseNewPassword,
+                        style: Theme.of(context).textTheme.headlineSmall),
+                    const SizedBox(height: AppSpacing.x4),
+                    TextField(
+                      controller: _password,
+                      obscureText: true,
+                      autofillHints: const [AutofillHints.newPassword],
+                      decoration: InputDecoration(
+                          labelText: strings.newPassword,
+                          helperText: strings.passwordMinimumHint),
+                    ),
+                    const SizedBox(height: AppSpacing.x3),
+                    TextField(
+                      controller: _confirmPassword,
+                      obscureText: true,
+                      autofillHints: const [AutofillHints.newPassword],
+                      onSubmitted: (_) => _busy ? null : _savePassword(),
+                      decoration: InputDecoration(
+                          labelText: strings.confirmNewPassword),
+                    ),
+                    if (_error case final error?) ...[
+                      const SizedBox(height: AppSpacing.x3),
+                      Text(error,
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.error)),
+                    ],
+                    const SizedBox(height: AppSpacing.x4),
+                    FilledButton(
+                      onPressed: _busy ? null : _savePassword,
+                      child: Text(
+                          _busy ? strings.pleaseWait : strings.saveNewPassword),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -127,7 +307,7 @@ class _SignInScreenState extends State<SignInScreen> {
     super.dispose();
   }
 
-  Future<void> _submit({required bool create}) async {
+  Future<void> _submit() async {
     final strings = AppLocalizations.of(context);
     final email = _email.text.trim();
     final password = _password.text;
@@ -153,23 +333,10 @@ class _SignInScreenState extends State<SignInScreen> {
     });
     try {
       final auth = Supabase.instance.client.auth;
-      if (create) {
-        final response = await auth.signUp(
-          email: email,
-          password: password,
-        );
-        if (response.session == null && mounted) {
-          setState(() => _notice = strings.confirmEmailNotice);
-        }
-      } else {
-        await auth.signInWithPassword(
-          email: email,
-          password: password,
-        );
-      }
+      await auth.signInWithPassword(email: email, password: password);
     } on AuthException catch (error) {
       if (mounted) {
-        setState(() => _error = _authErrorMessage(error, create, strings));
+        setState(() => _error = _authErrorMessage(error, strings));
       }
     } catch (_) {
       if (mounted) setState(() => _error = strings.connectionError);
@@ -180,7 +347,6 @@ class _SignInScreenState extends State<SignInScreen> {
 
   String _authErrorMessage(
     AuthException error,
-    bool creatingAccount,
     AppLocalizations strings,
   ) {
     final code = error.code?.toLowerCase();
@@ -202,9 +368,7 @@ class _SignInScreenState extends State<SignInScreen> {
         error.statusCode == '429') {
       return strings.authRateLimitError;
     }
-    return creatingAccount
-        ? strings.accountCreateError
-        : strings.genericAuthError;
+    return strings.genericAuthError;
   }
 
   @override
@@ -275,18 +439,336 @@ class _SignInScreenState extends State<SignInScreen> {
                     SizedBox(
                       height: AppTouchTarget.minimum,
                       child: FilledButton(
-                        onPressed: _busy ? null : () => _submit(create: false),
+                        onPressed: _busy ? null : _submit,
                         child: Text(
                           _busy ? strings.pleaseWait : strings.signIn,
                         ),
                       ),
                     ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: _busy
+                            ? null
+                            : () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => ForgotPasswordScreen(
+                                        initialEmail: _email.text.trim()),
+                                  ),
+                                ),
+                        child: Text(strings.forgotPassword),
+                      ),
+                    ),
                     SizedBox(
                       height: AppTouchTarget.minimum,
-                      child: TextButton(
-                        onPressed: _busy ? null : () => _submit(create: true),
+                      child: OutlinedButton(
+                        onPressed: _busy
+                            ? null
+                            : () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                      builder: (_) => const SignUpScreen()),
+                                ),
                         child: Text(strings.createAccount),
                       ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class SignUpScreen extends StatefulWidget {
+  const SignUpScreen({super.key});
+
+  @override
+  State<SignUpScreen> createState() => _SignUpScreenState();
+}
+
+class _SignUpScreenState extends State<SignUpScreen> {
+  final _email = TextEditingController();
+  final _password = TextEditingController();
+  final _confirmPassword = TextEditingController();
+  bool _busy = false;
+  String? _error;
+  String? _notice;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    _confirmPassword.dispose();
+    super.dispose();
+  }
+
+  Future<void> _createAccount() async {
+    final strings = AppLocalizations.of(context);
+    final email = _email.text.trim();
+    final password = _password.text;
+    final emailValid = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email);
+    final error = email.isEmpty
+        ? strings.emailRequired
+        : !emailValid
+            ? strings.invalidEmailError
+            : password.isEmpty
+                ? strings.passwordRequired
+                : password.length < 6
+                    ? strings.passwordTooShort
+                    : password != _confirmPassword.text
+                        ? strings.passwordsDoNotMatch
+                        : null;
+    if (error != null) {
+      setState(() {
+        _error = error;
+        _notice = null;
+      });
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+      _notice = null;
+    });
+    try {
+      final response = await Supabase.instance.client.auth
+          .signUp(email: email, password: password);
+      if (response.session == null && mounted) {
+        setState(() => _notice = strings.confirmEmailNotice);
+      }
+    } on AuthException catch (error) {
+      if (mounted) {
+        setState(() => _error = _signupErrorMessage(error, strings));
+      }
+    } catch (_) {
+      if (mounted) setState(() => _error = strings.connectionError);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  String _signupErrorMessage(AuthException error, AppLocalizations strings) {
+    final code = error.code?.toLowerCase();
+    final message = error.message.toLowerCase();
+    if (code == 'weak_password' || message.contains('password')) {
+      return strings.weakPasswordError;
+    }
+    if (code == 'email_address_invalid' || message.contains('invalid email')) {
+      return strings.invalidEmailError;
+    }
+    if (code == 'user_already_exists' ||
+        code == 'user_already_registered' ||
+        message.contains('already registered') ||
+        message.contains('already been registered')) {
+      return strings.accountExistsError;
+    }
+    if (code == 'over_email_send_rate_limit' ||
+        code == 'over_request_rate_limit' ||
+        error.statusCode == '429') {
+      return strings.authRateLimitError;
+    }
+    return strings.accountCreateError;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
+    return Scaffold(
+      appBar: AppBar(title: Text(strings.createAccount)),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(AppSpacing.x4),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: AppLayout.signInColumn),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.x6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Icon(Icons.favorite_outline,
+                        size: AppIconSize.large,
+                        color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(height: AppSpacing.x4),
+                    Text(strings.signUpHeadline,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.headlineSmall),
+                    const SizedBox(height: AppSpacing.x2),
+                    Text(strings.signUpPrompt,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium),
+                    const SizedBox(height: AppSpacing.x6),
+                    TextField(
+                      controller: _email,
+                      keyboardType: TextInputType.emailAddress,
+                      autofillHints: const [AutofillHints.newUsername],
+                      decoration: InputDecoration(labelText: strings.email),
+                    ),
+                    const SizedBox(height: AppSpacing.x3),
+                    TextField(
+                      controller: _password,
+                      obscureText: true,
+                      autofillHints: const [AutofillHints.newPassword],
+                      decoration: InputDecoration(
+                          labelText: strings.password,
+                          helperText: strings.passwordMinimumHint),
+                    ),
+                    const SizedBox(height: AppSpacing.x3),
+                    TextField(
+                      controller: _confirmPassword,
+                      obscureText: true,
+                      autofillHints: const [AutofillHints.newPassword],
+                      onSubmitted: (_) => _busy ? null : _createAccount(),
+                      decoration:
+                          InputDecoration(labelText: strings.confirmPassword),
+                    ),
+                    if (_error case final error?) ...[
+                      const SizedBox(height: AppSpacing.x3),
+                      Text(error,
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.error),
+                          textAlign: TextAlign.center),
+                    ],
+                    if (_notice case final notice?) ...[
+                      const SizedBox(height: AppSpacing.x3),
+                      Text(notice,
+                          style: Theme.of(context).textTheme.bodyMedium,
+                          textAlign: TextAlign.center),
+                    ],
+                    const SizedBox(height: AppSpacing.x4),
+                    SizedBox(
+                      height: AppTouchTarget.minimum,
+                      child: FilledButton(
+                        onPressed: _busy ? null : _createAccount,
+                        child: Text(
+                            _busy ? strings.pleaseWait : strings.createAccount),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed:
+                          _busy ? null : () => Navigator.of(context).pop(),
+                      child: Text(strings.backToSignIn),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ForgotPasswordScreen extends StatefulWidget {
+  const ForgotPasswordScreen({this.initialEmail = '', super.key});
+  final String initialEmail;
+
+  @override
+  State<ForgotPasswordScreen> createState() => _ForgotPasswordScreenState();
+}
+
+class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
+  late final _email = TextEditingController(text: widget.initialEmail);
+  bool _busy = false;
+  String? _error;
+  String? _notice;
+
+  @override
+  void dispose() {
+    _email.dispose();
+    super.dispose();
+  }
+
+  Future<void> _sendResetEmail() async {
+    final strings = AppLocalizations.of(context);
+    final email = _email.text.trim();
+    final valid = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email);
+    if (!valid) {
+      setState(() {
+        _error =
+            email.isEmpty ? strings.emailRequired : strings.invalidEmailError;
+        _notice = null;
+      });
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+      _notice = null;
+    });
+    try {
+      await Supabase.instance.client.auth.resetPasswordForEmail(
+        email,
+        redirectTo: kIsWeb
+            ? Uri.base.replace(queryParameters: {
+                ...Uri.base.queryParameters,
+                'auth_flow': 'password_recovery',
+              }).toString()
+            : 'together-date-planner://reset-password/',
+      );
+      if (mounted) setState(() => _notice = strings.passwordResetSent);
+    } on AuthException catch (error) {
+      if (mounted) {
+        final code = error.code?.toLowerCase();
+        setState(() => _error = code == 'over_email_send_rate_limit' ||
+                code == 'over_request_rate_limit' ||
+                error.statusCode == '429'
+            ? strings.authRateLimitError
+            : strings.passwordResetFailed);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _error = strings.connectionError);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final strings = AppLocalizations.of(context);
+    return Scaffold(
+      appBar: AppBar(title: Text(strings.forgotPassword)),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(AppSpacing.x4),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: AppLayout.signInColumn),
+            child: Card(
+              child: Padding(
+                padding: const EdgeInsets.all(AppSpacing.x6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(strings.passwordResetHeadline,
+                        style: Theme.of(context).textTheme.headlineSmall),
+                    const SizedBox(height: AppSpacing.x2),
+                    Text(strings.passwordResetPrompt),
+                    const SizedBox(height: AppSpacing.x4),
+                    TextField(
+                      controller: _email,
+                      keyboardType: TextInputType.emailAddress,
+                      autofillHints: const [AutofillHints.email],
+                      decoration: InputDecoration(labelText: strings.email),
+                    ),
+                    if (_error case final error?) ...[
+                      const SizedBox(height: AppSpacing.x3),
+                      Text(error,
+                          style: TextStyle(
+                              color: Theme.of(context).colorScheme.error)),
+                    ],
+                    if (_notice case final notice?) ...[
+                      const SizedBox(height: AppSpacing.x3),
+                      Text(notice),
+                    ],
+                    const SizedBox(height: AppSpacing.x4),
+                    FilledButton(
+                      onPressed: _busy ? null : _sendResetEmail,
+                      child: Text(
+                          _busy ? strings.pleaseWait : strings.sendResetEmail),
                     ),
                   ],
                 ),

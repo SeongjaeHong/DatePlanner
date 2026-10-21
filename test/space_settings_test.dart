@@ -22,6 +22,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Open settings'));
       await tester.pumpAndSettle();
+      expect(find.text('Profile and password'), findsOneWidget);
       expect(find.text('Leave Space'), findsOneWidget);
       expect(find.text('Delete account'), findsOneWidget);
       expect(tester.takeException(), isNull);

@@ -95,6 +95,7 @@ Verification: **A** = automated test, **M** = manual (desktop web / Android app 
 | ID | Decision |
 |---|---|
 | U-02A | Re-pointing `space_id` on the same rows during a Space merge is acceptable (no copies, same ids, no file moves) |
+| U-01 (auth/recovery) | Use email/password authentication. Account recovery sends a Supabase password-reset email and returns to an in-app password form; the app does not issue temporary passwords. Password changes in Profile require the current password and matching new-password confirmation. Allow the web origin and `together-date-planner://reset-password/` in Supabase Auth redirect URLs. |
 | U-02B | No extra approval step for the inviter when the invitee joins with existing plans |
 | U-13 | Leaving: the leaver loses the data; when both have left nobody owns it; ownerless data is permanently deleted. Account deletion removes the profile only; Space data is deleted only if it has no owner |
 | U-12 | Photo defaults (pick, camera, multi-select); max 3 MB; larger photos are compressed; copy & paste supported |
@@ -109,7 +110,6 @@ Verification: **A** = automated test, **M** = manual (desktop web / Android app 
 ## 5. Unresolved decisions
 | ID | Decision | Notes / proposed default (not adopted) |
 |---|---|---|
-| U-01 | Auth method & account recovery | E-mail magic link vs password vs Google |
 | U-03 | Map provider; directions link format | Cost/licence/key handling; PDF renderer is selected in §4 |
 | U-04 | Invitation expiry, revocation, regeneration | Proposed: single use, revocable; expiry length open |
 | U-05 | Code entry: manual only vs fragment link | Never path/query |

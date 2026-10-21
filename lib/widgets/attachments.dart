@@ -330,12 +330,16 @@ class _CardPhotosState extends State<CardPhotos> {
   void _reload() =>
       setState(() => _items = _service.listForCard(widget.cardId));
 
-  Future<void> _pick({bool camera = false}) async {
-    final images = camera
-        ? [await _picker.pickImage(source: ImageSource.camera)]
+  Future<void> _pick({bool camera = false, String? retryAttachmentId}) async {
+    final images = retryAttachmentId != null
+        ? [await _picker.pickImage(source: ImageSource.gallery)]
             .whereType<XFile>()
             .toList()
-        : await _picker.pickMultiImage();
+        : camera
+            ? [await _picker.pickImage(source: ImageSource.camera)]
+                .whereType<XFile>()
+                .toList()
+            : await _picker.pickMultiImage();
     var compressedAny = false;
     for (final image in images) {
       try {
@@ -348,7 +352,9 @@ class _CardPhotosState extends State<CardPhotos> {
           kind: 'photo',
           originalName: _jpegName(image.name),
           bytes: normalized.bytes,
+          retryAttachmentId: retryAttachmentId,
         );
+        retryAttachmentId = null;
       } catch (error) {
         if (!mounted) return;
         final s = AppLocalizations.of(context);
@@ -398,7 +404,17 @@ class _CardPhotosState extends State<CardPhotos> {
   }
 
   Future<void> _open(SpaceAttachment item) async {
-    final bytes = await _service.downloadOriginal(item);
+    Uint8List bytes;
+    try {
+      bytes = await _service.downloadOriginal(item);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content:
+                Text(AppLocalizations.of(context).attachmentDownloadFailed)));
+      }
+      return;
+    }
     if (!mounted) return;
     await showDialog<void>(
         context: context,
@@ -455,11 +471,11 @@ class _CardPhotosState extends State<CardPhotos> {
               runSpacing: AppSpacing.x2,
               children: [
                 for (final item in items)
-                  if (item.status == 'ready')
-                    SizedBox(
-                      width: 88,
-                      height: 88,
-                      child: Stack(fit: StackFit.expand, children: [
+                  SizedBox(
+                    width: 88,
+                    height: 88,
+                    child: Stack(fit: StackFit.expand, children: [
+                      if (item.status == 'ready')
                         InkWell(
                             onTap: () => _open(item),
                             child: FutureBuilder<Uint8List>(
@@ -467,22 +483,47 @@ class _CardPhotosState extends State<CardPhotos> {
                                   () => _service.downloadOriginal(item)),
                               builder: (context, photo) => photo.hasData
                                   ? Image.memory(photo.data!, fit: BoxFit.cover)
-                                  : ColoredBox(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerHighest,
-                                      child: Center(
-                                          child: Icon(Icons.photo_outlined))),
+                                  : photo.hasError
+                                      ? IconButton(
+                                          tooltip: s.retry,
+                                          onPressed: () => setState(() {
+                                            _photoBytes.remove(item.id);
+                                          }),
+                                          icon: const Icon(Icons.refresh),
+                                        )
+                                      : ColoredBox(
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .surfaceContainerHighest,
+                                          child: Center(
+                                              child:
+                                                  Icon(Icons.photo_outlined))),
                             )),
-                        Positioned(
-                            right: 0,
-                            top: 0,
-                            child: IconButton.filledTonal(
-                                tooltip: s.removeAttachment,
-                                onPressed: () => _remove(item),
-                                icon: const Icon(Icons.close, size: 16))),
-                      ]),
-                    ),
+                      if (item.status == 'failed')
+                        Center(
+                          child: IconButton.filledTonal(
+                            tooltip: s.retry,
+                            onPressed: () => _pick(retryAttachmentId: item.id),
+                            icon: const Icon(Icons.refresh),
+                          ),
+                        ),
+                      if (item.status == 'deleting')
+                        Center(
+                          child: IconButton.filledTonal(
+                            tooltip: s.removeAttachment,
+                            onPressed: () => _remove(item),
+                            icon: const Icon(Icons.delete_outline),
+                          ),
+                        ),
+                      Positioned(
+                          right: 0,
+                          top: 0,
+                          child: IconButton.filledTonal(
+                              tooltip: s.removeAttachment,
+                              onPressed: () => _remove(item),
+                              icon: const Icon(Icons.close, size: 16))),
+                    ]),
+                  ),
                 IconButton.filledTonal(
                   tooltip: s.addPhoto,
                   onPressed: () => _pick(),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../l10n/generated/app_localizations.dart';
+import 'profile_settings.dart';
 import '../services/space_lifecycle_service.dart';
 import '../theme/app_theme.dart';
 
@@ -31,6 +32,12 @@ class _SpaceSettingsScreenState extends State<SpaceSettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final strings = AppLocalizations.of(context);
+    String accountEmail;
+    try {
+      accountEmail = Supabase.instance.client.auth.currentUser?.email ?? '';
+    } catch (_) {
+      accountEmail = '';
+    }
     return Scaffold(
       appBar: AppBar(title: Text(strings.settings)),
       body: ListView(
@@ -39,6 +46,20 @@ class _SpaceSettingsScreenState extends State<SpaceSettingsScreen> {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: AppSpacing.x2),
             child: Text(strings.settingsSpaceMemberCount(_memberCount)),
+          ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.manage_accounts_outlined),
+              title: Text(strings.profileSettings),
+              subtitle: Text(accountEmail),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _busy
+                  ? null
+                  : () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                            builder: (_) => const ProfileSettingsScreen()),
+                      ),
+            ),
           ),
           Card(
             child: ListTile(
