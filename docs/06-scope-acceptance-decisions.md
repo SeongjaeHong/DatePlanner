@@ -5,9 +5,9 @@
 |---|---|---|
 | Auth, Space, invite, join/merge | Yes | Supabase project + auth provider + SMTP for production e-mail (account creation needs explicit request) |
 | Plans, days, cards, reorder | Yes | – |
-| Places + mini-map + Expand Map | Yes (manual name/address/coords) | **Map tile provider** (key/billing/usage policy) – U-03 |
+| Places + mini-map + Expand Map | Yes (manual name/address/coords) | OpenStreetMap raster tiles; no place search/geocoding |
 | Place search / geocoding | No | Paid/rate-limited API – later |
-| Directions | Yes: opens external app/URL with coordinates | Link format decision U-03 |
+| Directions | Yes: opens external app/URL with coordinates | Google Maps URL, opened only after user taps Directions |
 | Transport/accommodation records | Yes | – |
 | PDF attach, in-app preview, original download | Yes (≤ 3 MiB) | Renderer selected: `pdfrx` (MIT; Android/Web PDFium) |
 | Photos on cards | Yes (private): picker, camera, paste; on-device compression to 3 MiB | Paste on mobile web unverified; thumbnails U-08 |
@@ -43,6 +43,7 @@ Verification: **A** = automated test, **M** = manual (desktop web / Android app 
 * AC-S3-7 (A, DB) Simultaneous mutual redemption and two redeemers of one code: exactly one outcome, no deadlock, no partial state.
 * AC-S3-8 (A) Static check: every public table with `space_id` is covered by the merge list.
 * AC-S3-9 (M) After join both users see all plans/files created before joining and can edit them.
+* AC-S3-10 (A, DB) New invitations expire exactly seven days after creation; expired codes fail both prepare and confirm, and a replacement can be issued. Legacy rows use `created_at` for the same expiry without rewriting their data.
 
 ### Plans, cards, ordering (S4)
 * AC-S4-1 (A,M) Creating a plan with dates D1–D2 creates exactly one day per date; stored as `date` values; changing device time zone never changes displayed dates.
@@ -110,10 +111,7 @@ Verification: **A** = automated test, **M** = manual (desktop web / Android app 
 ## 5. Unresolved decisions
 | ID | Decision | Notes / proposed default (not adopted) |
 |---|---|---|
-| U-03 | Map provider; directions link format | Cost/licence/key handling; PDF renderer is selected in §4 |
-| U-04 | Invitation expiry, revocation, regeneration | Proposed: single use, revocable; expiry length open |
 | U-05 | Code entry: manual only vs fragment link | Never path/query |
-| U-07 | Retention/purge of soft-deleted items in a live Space and files of failed uploads | Nothing auto-deleted until decided |
 | U-08 | Photo thumbnails (paid image transforms vs on-device) | Compression itself is decided |
 | U-09 | Offline access to tickets / device caching | Opt-in per file proposed |
 | U-10 | PWA/installable mobile web | Not assumed |
@@ -128,3 +126,10 @@ Note: maximum photos per card is not set (proposed: no limit); HEIC support per 
 |---|---|
 | U-03 (PDF part) | Use `pdfrx` (MIT) for Android app, desktop web, and Android mobile web. It uses PDFium natively and PDFium WASM on web; it does not require loading the viewer from a third-party CDN. This is a risk-based selection, not a guarantee that the dependency has no vulnerabilities. Keep it updated and review dependency/security advisories. |
 | U-06 | Supabase private-storage signed URLs expire 300 seconds (5 minutes) after each issuance. This limits one delivery link only: while a user remains a member and the file remains in the Space, the app can issue a fresh link after checking membership, so the user's access does not expire. On link expiry, request a fresh URL once and retry; if that retry fails, show a retryable error. A URL is a temporary bearer link, so never put it in routes, logs, or persistent storage. When membership is removed, no new link may be issued; an already-issued link may remain usable until its own expiry. |
+
+## 7. Additional implementation decisions (2026-10-22)
+| ID | Decision |
+|---|---|
+| U-03 (map) | Keep the current map behavior: OpenStreetMap raster tiles and the existing separate Google Maps Directions action. Do not add map search or geocoding. |
+| U-04 | Invitation codes are single-use and revocable, and expire seven days after creation. Expired invitations cannot be redeemed; the owner can create a new code. |
+| U-07 | Do not automatically purge soft-deleted records or failed-upload data while a Space is active. |

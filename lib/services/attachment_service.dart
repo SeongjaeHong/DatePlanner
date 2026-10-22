@@ -212,11 +212,26 @@ class AttachmentService {
   Future<void> delete(SpaceAttachment attachment) async {
     await _client.rpc('mark_space_attachment_deleting',
         params: {'p_attachment_id': attachment.id});
-    await _client.storage
-        .from(attachmentBucket)
-        .remove([attachment.storagePath]);
-    await _client.rpc('finish_space_attachment_delete',
-        params: {'p_attachment_id': attachment.id});
+
+    // Storage removal and its database row are not always visible to the
+    // following Postgres RPC in the same instant. If finalization reports
+    // that the object still exists, repeat the idempotent Storage delete and
+    // check again instead of leaving the attachment stuck in `deleting`.
+    for (var attempt = 0; attempt < 3; attempt++) {
+      await _client.storage
+          .from(attachmentBucket)
+          .remove([attachment.storagePath]);
+      try {
+        await _client.rpc('finish_space_attachment_delete',
+            params: {'p_attachment_id': attachment.id});
+        return;
+      } on PostgrestException catch (error) {
+        final objectStillExists =
+            error.message.contains('ATTACHMENT_OBJECT_REMAINS');
+        if (!objectStillExists || attempt == 2) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: 150 * (attempt + 1)));
+      }
+    }
   }
 }
 

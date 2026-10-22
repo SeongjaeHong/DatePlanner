@@ -247,9 +247,15 @@ class _BookingAttachmentsState extends State<BookingAttachments> {
 }
 
 class CardPhotos extends StatefulWidget {
-  const CardPhotos({required this.planId, required this.cardId, super.key});
+  const CardPhotos({
+    required this.planId,
+    required this.cardId,
+    this.service,
+    super.key,
+  });
   final String planId;
   final String cardId;
+  final AttachmentService? service;
 
   @override
   State<CardPhotos> createState() => _CardPhotosState();
@@ -321,14 +327,40 @@ class _PdfPreviewDialogState extends State<_PdfPreviewDialog> {
 }
 
 class _CardPhotosState extends State<CardPhotos> {
-  final _service = AttachmentService();
+  late final AttachmentService _service = widget.service ?? AttachmentService();
   final _picker = ImagePicker();
   final Map<String, Future<Uint8List>> _photoBytes = {};
+  final Set<String> _deletingIds = {};
   late Future<List<SpaceAttachment>> _items =
       _service.listForCard(widget.cardId);
 
-  void _reload() =>
-      setState(() => _items = _service.listForCard(widget.cardId));
+  void _reload() {
+    setState(() {
+      _items = _service.listForCard(widget.cardId);
+    });
+  }
+
+  void _showUploaded(SpaceAttachment attachment) {
+    if (!mounted) return;
+    _photoBytes.remove(attachment.id);
+    setState(() {
+      _items = _items.then((items) => [
+            ...items.where((item) => item.id != attachment.id),
+            attachment,
+          ]);
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant CardPhotos oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.cardId != widget.cardId ||
+        oldWidget.planId != widget.planId) {
+      _photoBytes.clear();
+      _deletingIds.clear();
+      _items = _service.listForCard(widget.cardId);
+    }
+  }
 
   Future<void> _pick({bool camera = false, String? retryAttachmentId}) async {
     final images = retryAttachmentId != null
@@ -346,7 +378,7 @@ class _CardPhotosState extends State<CardPhotos> {
         final input = await image.readAsBytes();
         final normalized = preparePhotoForUpload(input);
         compressedAny = compressedAny || normalized.compressed;
-        await _service.upload(
+        final uploaded = await _service.upload(
           planId: widget.planId,
           activityCardId: widget.cardId,
           kind: 'photo',
@@ -354,6 +386,7 @@ class _CardPhotosState extends State<CardPhotos> {
           bytes: normalized.bytes,
           retryAttachmentId: retryAttachmentId,
         );
+        _showUploaded(uploaded);
         retryAttachmentId = null;
       } catch (error) {
         if (!mounted) return;
@@ -363,9 +396,10 @@ class _CardPhotosState extends State<CardPhotos> {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content:
                 Text(tooLarge ? s.imageCannotBeCompressed : s.invalidImage)));
+        _reload();
       }
     }
-    _reload();
+    if (mounted) _reload();
     if (compressedAny && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(AppLocalizations.of(context).imageCompressed)));
@@ -384,12 +418,13 @@ class _CardPhotosState extends State<CardPhotos> {
         return;
       }
       final normalized = preparePhotoForUpload(bytes);
-      await _service.upload(
+      final uploaded = await _service.upload(
           planId: widget.planId,
           activityCardId: widget.cardId,
           kind: 'photo',
           originalName: 'pasted-photo.jpg',
           bytes: normalized.bytes);
+      _showUploaded(uploaded);
       _reload();
       if (normalized.compressed && mounted) {
         ScaffoldMessenger.of(context)
@@ -399,6 +434,7 @@ class _CardPhotosState extends State<CardPhotos> {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(s.invalidImage)));
+        _reload();
       }
     }
   }
@@ -438,15 +474,23 @@ class _CardPhotosState extends State<CardPhotos> {
   }
 
   Future<void> _remove(SpaceAttachment item) async {
+    if (!_deletingIds.add(item.id)) return;
+    setState(() {});
     try {
       await _service.delete(item);
       _photoBytes.remove(item.id);
-      _reload();
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content:
                 Text(AppLocalizations.of(context).attachmentDeleteFailed)));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _deletingIds.remove(item.id);
+          _items = _service.listForCard(widget.cardId);
+        });
       }
     }
   }
@@ -466,81 +510,109 @@ class _CardPhotosState extends State<CardPhotos> {
                 onRetry: _reload);
           }
           final items = snapshot.data ?? const <SpaceAttachment>[];
-          return Wrap(
-              spacing: AppSpacing.x2,
-              runSpacing: AppSpacing.x2,
-              children: [
-                for (final item in items)
-                  SizedBox(
-                    width: 88,
-                    height: 88,
-                    child: Stack(fit: StackFit.expand, children: [
-                      if (item.status == 'ready')
-                        InkWell(
-                            onTap: () => _open(item),
-                            child: FutureBuilder<Uint8List>(
-                              future: _photoBytes.putIfAbsent(item.id,
-                                  () => _service.downloadOriginal(item)),
-                              builder: (context, photo) => photo.hasData
-                                  ? Image.memory(photo.data!, fit: BoxFit.cover)
-                                  : photo.hasError
-                                      ? IconButton(
-                                          tooltip: s.retry,
-                                          onPressed: () => setState(() {
-                                            _photoBytes.remove(item.id);
-                                          }),
-                                          icon: const Icon(Icons.refresh),
-                                        )
-                                      : ColoredBox(
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .surfaceContainerHighest,
-                                          child: Center(
-                                              child:
-                                                  Icon(Icons.photo_outlined))),
-                            )),
-                      if (item.status == 'failed')
-                        Center(
-                          child: IconButton.filledTonal(
-                            tooltip: s.retry,
-                            onPressed: () => _pick(retryAttachmentId: item.id),
-                            icon: const Icon(Icons.refresh),
+          final deletingItems =
+              items.where((item) => item.status == 'deleting').toList();
+          final visibleItems =
+              items.where((item) => item.status != 'deleting').toList();
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Wrap(
+                spacing: AppSpacing.x2,
+                runSpacing: AppSpacing.x2,
+                children: [
+                  for (final item in visibleItems)
+                    SizedBox(
+                      key: ValueKey('photo-${item.id}'),
+                      width: 88,
+                      height: 88,
+                      child: Stack(fit: StackFit.expand, children: [
+                        if (item.status == 'ready')
+                          InkWell(
+                              onTap: () => _open(item),
+                              child: FutureBuilder<Uint8List>(
+                                future: _photoBytes.putIfAbsent(item.id,
+                                    () => _service.downloadOriginal(item)),
+                                builder: (context, photo) => photo.hasData
+                                    ? Image.memory(photo.data!,
+                                        fit: BoxFit.cover)
+                                    : photo.hasError
+                                        ? IconButton(
+                                            tooltip: s.retry,
+                                            onPressed: () => setState(() {
+                                              _photoBytes.remove(item.id);
+                                            }),
+                                            icon: const Icon(Icons.refresh),
+                                          )
+                                        : ColoredBox(
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .surfaceContainerHighest,
+                                            child: Center(
+                                                child: Icon(
+                                                    Icons.photo_outlined))),
+                              )),
+                        if (item.status == 'failed')
+                          Center(
+                            child: IconButton.filledTonal(
+                              tooltip: s.retry,
+                              onPressed: () =>
+                                  _pick(retryAttachmentId: item.id),
+                              icon: const Icon(Icons.refresh),
+                            ),
                           ),
-                        ),
-                      if (item.status == 'deleting')
-                        Center(
-                          child: IconButton.filledTonal(
-                            tooltip: s.removeAttachment,
-                            onPressed: () => _remove(item),
-                            icon: const Icon(Icons.delete_outline),
-                          ),
-                        ),
-                      Positioned(
-                          right: 0,
-                          top: 0,
-                          child: IconButton.filledTonal(
-                              tooltip: s.removeAttachment,
-                              onPressed: () => _remove(item),
-                              icon: const Icon(Icons.close, size: 16))),
-                    ]),
-                  ),
-                IconButton.filledTonal(
-                  tooltip: s.addPhoto,
-                  onPressed: () => _pick(),
-                  icon: const Icon(Icons.add_photo_alternate_outlined),
-                ),
-                IconButton.filledTonal(
-                  tooltip: s.takePhoto,
-                  onPressed: () => _pick(camera: true),
-                  icon: const Icon(Icons.photo_camera_outlined),
-                ),
-                if (supportsClipboardImageRead)
+                        Positioned(
+                            right: 0,
+                            top: 0,
+                            child: IconButton.filledTonal(
+                                tooltip: s.removeAttachment,
+                                onPressed: _deletingIds.contains(item.id)
+                                    ? null
+                                    : () => _remove(item),
+                                icon: const Icon(Icons.close, size: 16))),
+                      ]),
+                    ),
                   IconButton.filledTonal(
-                    tooltip: s.pastePhoto,
-                    onPressed: _paste,
-                    icon: const Icon(Icons.content_paste),
+                    tooltip: s.addPhoto,
+                    onPressed: () => _pick(),
+                    icon: const Icon(Icons.add_photo_alternate_outlined),
                   ),
-              ]);
+                  IconButton.filledTonal(
+                    tooltip: s.takePhoto,
+                    onPressed: () => _pick(camera: true),
+                    icon: const Icon(Icons.photo_camera_outlined),
+                  ),
+                  if (supportsClipboardImageRead)
+                    IconButton.filledTonal(
+                      tooltip: s.pastePhoto,
+                      onPressed: _paste,
+                      icon: const Icon(Icons.content_paste),
+                    ),
+                ],
+              ),
+              if (deletingItems.isNotEmpty) ...[
+                const SizedBox(height: AppSpacing.x2),
+                Wrap(
+                  spacing: AppSpacing.x2,
+                  runSpacing: AppSpacing.x1,
+                  children: [
+                    for (final item in deletingItems)
+                      _deletingIds.contains(item.id)
+                          ? const SizedBox(
+                              height: 40,
+                              width: 40,
+                              child: Center(child: CircularProgressIndicator()),
+                            )
+                          : TextButton.icon(
+                              onPressed: () => _remove(item),
+                              icon: const Icon(Icons.delete_outline),
+                              label: Text(s.retry),
+                            ),
+                  ],
+                ),
+              ],
+            ],
+          );
         },
       );
 }

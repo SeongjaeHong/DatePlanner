@@ -90,7 +90,7 @@ Transport and accommodation are booked through external providers. The app recor
 
 ## 11. Open implementation decisions
 
-The agreed requirements do not prescribe the detailed UI design, map provider, navigation deep-link format, exact booking fields, PDF rendering package, file type limits (size limits are fixed in section 12), invitation-code expiry or revocation policy, or account recovery flow. Resolve these as implementation decisions when the relevant stage is requested, without weakening the privacy, membership, file-preservation, or two-member requirements.
+The agreed requirements do not prescribe the detailed UI design, navigation deep-link format, exact booking fields, PDF rendering package, file type limits (size limits are fixed in section 12), or account recovery flow. Resolve these as implementation decisions when the relevant stage is requested, without weakening the privacy, membership, file-preservation, or two-member requirements.
 
 ## 12. Agreed decisions (design review, 2026-10-10)
 
@@ -115,3 +115,9 @@ The agreed requirements do not prescribe the detailed UI design, map provider, n
 12.10 **PDF viewer.** Use the MIT-licensed `pdfrx` Flutter package to render PDFs in the Android app and both web layouts. The package uses PDFium on native platforms and PDFium WASM on web. This selection does not guarantee the absence of vulnerabilities; dependency updates and security advisories must be reviewed.
 
 12.11 **Private-file preview links.** Each signed URL expires after 300 seconds; this is the lifetime of that particular delivery link, not the member's permission. While a user remains a Space member and the file remains in the Space, the app can issue a fresh URL after checking current membership, so their file access continues. On expiry, the app may issue one fresh URL and retry the preview. Signed URLs are temporary bearer links and must not appear in routes, logs, or persistent storage. The Storage bucket remains private. After membership is removed, no new URL may be issued, though a previously issued URL may remain usable until it expires.
+
+12.12 **Map behavior.** Keep the current OpenStreetMap raster map and separate Google Maps Directions action. Do not add map search or geocoding in this stage.
+
+12.13 **Invitation expiry.** Invitation codes are single-use and revocable and expire seven days after creation. Expired invitations cannot be redeemed; a new code may be created.
+
+12.14 **Active-Space retention.** Soft-deleted records and failed-upload data are not automatically purged while their Space is active.

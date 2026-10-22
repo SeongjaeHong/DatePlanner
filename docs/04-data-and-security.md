@@ -31,7 +31,7 @@ erDiagram
 | `profiles` | `id` = `auth.users.id`, `display_name`, `locale` (default `en`), `home_time_zone` (IANA) |
 | `spaces` | `id`, `name?`, `status` (`active`\|`merged`), `merged_into?`, `created_by`, `created_at`. Merged Spaces are **retained as tombstones**, never deleted by the app |
 | `space_members` | `space_id`, `user_id` **UNIQUE** (one Space per user), `role` (`owner`\|`member`), `joined_at`. Trigger enforces ≤ 2 rows per Space under a row lock |
-| `space_invitations` | `id`, `space_id`, `created_by`, `code_hash` (never the code), `status` (`pending`\|`accepted`\|`revoked`\|`expired`), `expires_at?` (U-04), `accepted_by?`, timestamps. Partial unique index: ≤ 1 `pending` per Space |
+| `space_invitations` | `id`, `space_id`, `created_by`, `code_hash` (never the code), `status` (`pending`\|`accepted`\|`revoked`\|`expired`), `expires_at?` (7 days after creation; legacy rows use `created_at + 7 days` without rewriting them), `accepted_by?`, timestamps. Partial unique index: ≤ 1 `pending` per Space |
 | `space_merge_operations` | `id` (client idempotency key), `invitation_id` UNIQUE, `source_space_id`, `target_space_id`, `actor_user_id`, `status` (`prepared`\|`completed`\|`rejected`), `disclosure_version`, `counts_before jsonb`, `counts_moved jsonb`, `error_code?`, timestamps |
 | `date_plans` | `space_id`, `title`, `start_date date`, `end_date date` (CHECK `end_date >= start_date`), `notes`, `version`, `deleted_at?` |
 | `plan_days` | `plan_id`, `space_id`, `day_date date`, UNIQUE(`plan_id`,`day_date`) |
@@ -67,7 +67,7 @@ Booking references and similar are real personal data: stored only in the databa
 * Two buckets, both **`public = false`**: `pdfs` (`application/pdf` only) and `photos` (JPEG only after client processing, see §6). **`file_size_limit` = 3 MiB on both (decided: 3 MiB = 3,145,728 bytes)**, enforced by Storage itself in addition to the client check.
 * Object path = `<random uuid>/<uuid>.<ext>` — **contains no `space_id`** — so a Space merge never requires moving or renaming files or rewriting storage policies.
 * `storage.objects` policies: `SELECT/INSERT/UPDATE/DELETE` allowed iff an `attachments` row with `storage_path = objects.name` exists whose `space_id` passes `is_space_member`. For INSERT the `attachments` row (`status='pending'`) is created first by the client under RLS, then the upload is authorized against it.
-* Upload: client creates `attachments` row (pending) → uploads object → calls `finalize_attachment(id)` which verifies size/content type (PDF magic bytes `%PDF-` for kind=pdf) and sets `ready`; failures set `failed` and are retryable; orphaned files left by failed uploads: cleanup policy still open (U-07); nothing is auto-deleted until decided.
+* Upload: client creates `attachments` row (pending) → uploads object → calls `finalize_attachment(id)` which verifies size/content type (PDF magic bytes `%PDF-` for kind=pdf) and sets `ready`; failures set `failed` and are retryable; failed-upload records and related data are not automatically purged while a Space is active (U-07).
 * **PDFs** are stored byte-for-byte; the app never rewrites, compresses, or replaces a PDF. A PDF over 3 MiB is rejected, not compressed.
 * **Photos** ≤ 3 MiB are stored unchanged. Photos over 3 MiB are compressed on the device before upload and **only the compressed version is stored** (decided); see §6. Thumbnails are still open (U-08).
 
@@ -85,7 +85,7 @@ Booking references and similar are real personal data: stored only in the databa
 * **Optimistic concurrency:** editable rows carry `version bigint` (incremented by trigger). Client updates with `WHERE id=? AND version=?`; zero rows ⇒ conflict. UI `ConflictDialog` shows partner's latest values vs. the user's unsaved edits: *Keep mine* (resubmit on new version) / *Use theirs* / *Copy mine and use theirs*. Nothing is overwritten silently.
 * **Reorder:** `position` is a fractional-index string. Reorder/move uses server function `move_activity_card(card_id, target_day_id, prev_id, next_id)` that computes the key under a row lock, so stale neighbor info never corrupts order and a concurrent text edit does not make the reorder fail. Ties are ordered by `(position, id)` deterministically. A server-side rebalance function (single transaction) runs when keys grow long.
 * **Live updates:** Supabase Realtime subscription per open plan refreshes the feed; if the item being edited changes remotely, a non-blocking banner "Updated by your partner" is shown.
-* **Remove:** user-facing remove sets `deleted_at` (soft delete) so edit-vs-delete races are recoverable (*Restore*). Hard purge of soft-deleted rows inside a live Space is **not performed** until U-07 is decided (they are purged only by the Space deletion in §5). Removing a plan/booking/card **must state what happens to attached files** (they stay stored and recoverable).
+* **Remove:** user-facing remove sets `deleted_at` (soft delete) so edit-vs-delete races are recoverable (*Restore*). Soft-deleted rows in an active Space are not automatically purged (U-07). Removing a plan/booking/card **must state what happens to attached files** (they stay stored and recoverable).
 * **Shortening a plan's dates:** blocked while cards exist on days that would be dropped; user must move or explicitly remove those cards first.
 
 ## 4. Localization structure

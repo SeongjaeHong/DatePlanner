@@ -108,7 +108,7 @@
   "createInvitationCode": "Create invitation code",
   "activeInvitation": "Pending invitation",
   "invitationCode": "Invitation code",
-  "invitationCodeOneTime": "This code is shown only once. Share it privately. Anyone who joins with it can see and edit everything in both Spaces.",
+  "invitationCodeOneTime": "This code is shown only once and expires 7 days after creation. Share it privately. Anyone who joins with it can see and edit everything in both Spaces.",
   "invitationCodeUnavailable": "This code has already been shown and cannot be viewed again. Revoke the pending code to create a new one.",
   "revokeInvitation": "Revoke code",
   "revokeInvitationConfirm": "Revoking this code prevents anyone from using it. You can create a new code afterward.",

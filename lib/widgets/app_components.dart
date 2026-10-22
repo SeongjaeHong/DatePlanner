@@ -39,7 +39,7 @@ class EmptyState extends StatelessWidget {
   Widget build(BuildContext context) => Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: AppLayout.formColumn),
-          child: Padding(
+          child: SingleChildScrollView(
             padding: EdgeInsets.all(dense ? AppSpacing.x2 : AppSpacing.x6),
             child: Column(
               mainAxisSize: MainAxisSize.min,
